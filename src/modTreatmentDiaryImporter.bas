@@ -1,8 +1,6 @@
 Attribute VB_Name = "modTreatmentDiaryImporter"
 Option Explicit
 
-Private Const ONEDRIVE_WEB_PREFIX As String = "https://d.docs.live.net/"
-
 Private Const MASTER_SHEET_NAME As String = "治療日誌マスタ"
 Private Const REFERENCE_SHEET_NAME As String = "店舗リファレンス"
 Private Const EXEC_LOG_SHEET_NAME As String = "取込実行ログ"
@@ -134,7 +132,6 @@ Private Sub RunImport(ByVal filePaths As Collection, ByVal sourceLabel As String
     Dim currentPath As String
     Dim settingsApplied As Boolean
     Dim errorMessage As String
-    Dim archivedLogPath As String
 
     On Error GoTo ErrHandler
 
@@ -159,9 +156,9 @@ Private Sub RunImport(ByVal filePaths As Collection, ByVal sourceLabel As String
     EnsureSheetWithHeaders REFERENCE_SHEET_NAME, ReferenceHeaders()
     EnsureSheetWithHeaders EXEC_LOG_SHEET_NAME, ExecutionLogHeaders()
     EnsureSheetWithHeaders DETAIL_LOG_SHEET_NAME, DetailLogHeaders()
-    stepName = "既存ログ退避"
+    stepName = "既存ログクリア"
     currentPath = ThisWorkbook.FullName
-    archivedLogPath = ArchiveAndClearImportLogs()
+    ClearImportLogs
 
     stepName = "店舗リファレンス読込"
     Set storeMap = LoadStoreMap(ThisWorkbook.Worksheets(REFERENCE_SHEET_NAME))
@@ -178,9 +175,6 @@ Private Sub RunImport(ByVal filePaths As Collection, ByVal sourceLabel As String
     stepName = "既存取込キー読込"
     Set importKeys = LoadExistingImportKeys(ThisWorkbook.Worksheets(MASTER_SHEET_NAME))
     startedAt = Now
-    If Len(archivedLogPath) > 0 Then
-        AddExecutionLogInfo ThisWorkbook.Worksheets(EXEC_LOG_SHEET_NAME), startedAt, "前回ログを退避しました。 path=" & archivedLogPath
-    End If
 
     stepName = "ファイル取込"
     For Each filePath In filePaths
@@ -1695,96 +1689,15 @@ SafeExit:
     SheetHasDataRows = False
 End Function
 
-Private Function ArchiveAndClearImportLogs() As String
+Private Sub ClearImportLogs()
     Dim execSheet As Worksheet
     Dim detailSheet As Worksheet
 
     Set execSheet = ThisWorkbook.Worksheets(EXEC_LOG_SHEET_NAME)
     Set detailSheet = ThisWorkbook.Worksheets(DETAIL_LOG_SHEET_NAME)
 
-    ArchiveAndClearImportLogs = ArchiveImportLogs(execSheet, detailSheet, Now)
     ClearSheetDataRows execSheet
     ClearSheetDataRows detailSheet
-End Function
-
-Private Function ArchiveImportLogs(ByVal execSheet As Worksheet, ByVal detailSheet As Worksheet, ByVal archivedAt As Date) As String
-    Dim hasExecLogs As Boolean
-    Dim hasDetailLogs As Boolean
-    Dim fso As Object
-    Dim logStream As Object
-    Dim outputPath As String
-    Dim raisedNumber As Long
-    Dim raisedDescription As String
-
-    On Error GoTo ErrHandler
-
-    hasExecLogs = SheetHasDataRows(execSheet)
-    hasDetailLogs = SheetHasDataRows(detailSheet)
-    If Not hasExecLogs And Not hasDetailLogs Then
-        Exit Function
-    End If
-
-    outputPath = BuildImportLogFilePath(archivedAt)
-    Set fso = CreateObject("Scripting.FileSystemObject")
-    Set logStream = fso.CreateTextFile(outputPath, True, True)
-
-    logStream.WriteLine "治療日誌取込ログ"
-    logStream.WriteLine "出力日時: " & Format$(archivedAt, "yyyy/mm/dd hh:nn:ss")
-    logStream.WriteLine "ブック: " & ThisWorkbook.Name
-    logStream.WriteLine String$(80, "=")
-
-    WriteLogSection logStream, execSheet, EXEC_LOG_SHEET_NAME, UBound(ExecutionLogHeaders()) + 1
-    logStream.WriteLine String$(80, "=")
-    WriteLogSection logStream, detailSheet, DETAIL_LOG_SHEET_NAME, UBound(DetailLogHeaders()) + 1
-    logStream.Close
-    ArchiveImportLogs = outputPath
-    Exit Function
-
-ErrHandler:
-    raisedNumber = Err.Number
-    raisedDescription = Err.Description
-    On Error Resume Next
-    If Not logStream Is Nothing Then
-        logStream.Close
-    End If
-    Err.Raise raisedNumber, , "ログファイルを作成できません。 path=" & outputPath & " / detail=" & raisedDescription
-End Function
-
-Private Sub AddExecutionLogInfo(ByVal targetSheet As Worksheet, ByVal executedAt As Date, ByVal messageText As String)
-    Dim rows As Collection
-
-    Set rows = New Collection
-    AddExecutionLogRow rows, executedAt, vbNullString, vbNullString, "INFO", 0, 0, messageText
-    AppendRows targetSheet, rows, UBound(ExecutionLogHeaders()) + 1
-End Sub
-
-Private Sub WriteLogSection(ByVal logStream As Object, ByVal targetSheet As Worksheet, ByVal sectionName As String, ByVal columnCount As Long)
-    Dim lastRow As Long
-    Dim rowIndex As Long
-    Dim columnIndex As Long
-    Dim lineText As String
-
-    logStream.WriteLine "[" & sectionName & "]"
-
-    lastRow = LastDataRow(targetSheet, 1)
-    If lastRow < 2 Then
-        logStream.WriteLine "(データなし)"
-        logStream.WriteLine vbNullString
-        Exit Sub
-    End If
-
-    For rowIndex = 1 To lastRow
-        lineText = vbNullString
-        For columnIndex = 1 To columnCount
-            If columnIndex > 1 Then
-                lineText = lineText & vbTab
-            End If
-            lineText = lineText & EscapeLogValue(targetSheet.Cells(rowIndex, columnIndex).Value)
-        Next columnIndex
-        logStream.WriteLine lineText
-    Next rowIndex
-
-    logStream.WriteLine vbNullString
 End Sub
 
 Private Sub ClearSheetDataRows(ByVal targetSheet As Worksheet)
@@ -1797,212 +1710,6 @@ Private Sub ClearSheetDataRows(ByVal targetSheet As Worksheet)
 
     targetSheet.Rows("2:" & CStr(lastRow)).ClearContents
 End Sub
-
-Private Function BuildImportLogFilePath(ByVal archivedAt As Date) As String
-    Dim baseFolder As String
-    Dim logFolder As String
-
-    baseFolder = ResolveLogBaseFolder()
-
-    logFolder = baseFolder & Application.PathSeparator & "log"
-    EnsureFolderExists logFolder
-    BuildImportLogFilePath = logFolder & Application.PathSeparator & "import_" & Format$(archivedAt, "yyyymmdd_hhnnss") & ".log"
-End Function
-
-Private Function ResolveLogBaseFolder() As String
-    Dim candidateFolder As String
-    Dim localWorkbookPath As String
-
-    candidateFolder = ThisWorkbook.Path
-    If IsUsableLocalFolder(candidateFolder) Then
-        ResolveLogBaseFolder = candidateFolder
-        Exit Function
-    End If
-
-    localWorkbookPath = ResolveOneDriveLocalPath(ThisWorkbook.FullName)
-    If Len(localWorkbookPath) > 0 Then
-        candidateFolder = GetParentFolderPath(localWorkbookPath)
-    Else
-        candidateFolder = ResolveOneDriveLocalFolder(ThisWorkbook.Path)
-    End If
-    If IsUsableLocalFolder(candidateFolder) Then
-        ResolveLogBaseFolder = candidateFolder
-        Exit Function
-    End If
-
-    candidateFolder = Application.DefaultFilePath
-    If IsUsableLocalFolder(candidateFolder) Then
-        ResolveLogBaseFolder = candidateFolder
-        Exit Function
-    End If
-
-    candidateFolder = Environ$("USERPROFILE")
-    If IsUsableLocalFolder(candidateFolder) Then
-        ResolveLogBaseFolder = candidateFolder
-        Exit Function
-    End If
-
-    candidateFolder = Environ$("TEMP")
-    If IsUsableLocalFolder(candidateFolder) Then
-        ResolveLogBaseFolder = candidateFolder
-        Exit Function
-    End If
-
-    Err.Raise vbObjectError + 1011, , _
-              "ログ出力基準フォルダが見つかりません。 workbookPath=" & ThisWorkbook.Path & _
-              " / workbookFullName=" & ThisWorkbook.FullName & _
-              " / defaultPath=" & Application.DefaultFilePath
-End Function
-
-Private Function IsUsableLocalFolder(ByVal folderPath As String) As Boolean
-    Dim normalizedPath As String
-
-    normalizedPath = Trim$(folderPath)
-    If Len(normalizedPath) = 0 Then
-        Exit Function
-    End If
-
-    If LCase$(Left$(normalizedPath, 7)) = "http://" Or LCase$(Left$(normalizedPath, 8)) = "https://" Then
-        Exit Function
-    End If
-
-    IsUsableLocalFolder = FolderExists(normalizedPath)
-End Function
-
-Private Function ResolveOneDriveLocalFolder(ByVal workbookPath As String) As String
-    Dim normalizedPath As String
-    Dim relativePath As String
-    Dim oneDriveRoot As String
-    Dim personalRoot As String
-
-    normalizedPath = Trim$(workbookPath)
-    If LCase$(Left$(normalizedPath, Len(ONEDRIVE_WEB_PREFIX))) <> ONEDRIVE_WEB_PREFIX Then
-        Exit Function
-    End If
-
-    relativePath = Mid$(normalizedPath, Len(ONEDRIVE_WEB_PREFIX) + 1)
-    If InStr(relativePath, "/") = 0 Then
-        Exit Function
-    End If
-
-    relativePath = Mid$(relativePath, InStr(relativePath, "/") + 1)
-    relativePath = Replace(relativePath, "/", Application.PathSeparator)
-
-    oneDriveRoot = Environ$("OneDrive")
-    If Len(oneDriveRoot) > 0 Then
-        personalRoot = NormalizeWorkbookPath(oneDriveRoot & Application.PathSeparator & relativePath)
-        If FolderExists(personalRoot) Then
-            ResolveOneDriveLocalFolder = personalRoot
-            Exit Function
-        End If
-    End If
-
-    personalRoot = Environ$("UserProfile")
-    If Len(personalRoot) > 0 Then
-        personalRoot = NormalizeWorkbookPath(personalRoot & Application.PathSeparator & "OneDrive" & Application.PathSeparator & relativePath)
-        If FolderExists(personalRoot) Then
-            ResolveOneDriveLocalFolder = personalRoot
-        End If
-    End If
-End Function
-
-Private Function ResolveOneDriveLocalPath(ByVal workbookFullName As String) As String
-    Dim normalizedPath As String
-    Dim relativePath As String
-    Dim oneDriveRoot As String
-    Dim personalPath As String
-
-    normalizedPath = Trim$(workbookFullName)
-    If LCase$(Left$(normalizedPath, Len(ONEDRIVE_WEB_PREFIX))) <> ONEDRIVE_WEB_PREFIX Then
-        Exit Function
-    End If
-
-    relativePath = Mid$(normalizedPath, Len(ONEDRIVE_WEB_PREFIX) + 1)
-    If InStr(relativePath, "/") = 0 Then
-        Exit Function
-    End If
-
-    relativePath = Mid$(relativePath, InStr(relativePath, "/") + 1)
-    relativePath = Replace(relativePath, "/", Application.PathSeparator)
-
-    oneDriveRoot = Environ$("OneDrive")
-    If Len(oneDriveRoot) > 0 Then
-        personalPath = NormalizeWorkbookPath(oneDriveRoot & Application.PathSeparator & relativePath)
-        If FileExists(personalPath) Then
-            ResolveOneDriveLocalPath = personalPath
-            Exit Function
-        End If
-    End If
-
-    personalPath = Environ$("UserProfile")
-    If Len(personalPath) > 0 Then
-        personalPath = NormalizeWorkbookPath(personalPath & Application.PathSeparator & "OneDrive" & Application.PathSeparator & relativePath)
-        If FileExists(personalPath) Then
-            ResolveOneDriveLocalPath = personalPath
-        End If
-    End If
-End Function
-
-Private Function GetParentFolderPath(ByVal filePath As String) As String
-    Dim fso As Object
-
-    If Len(filePath) = 0 Then
-        Exit Function
-    End If
-
-    Set fso = CreateObject("Scripting.FileSystemObject")
-    GetParentFolderPath = fso.GetParentFolderName(filePath)
-End Function
-
-Private Sub EnsureFolderExists(ByVal folderPath As String)
-    Dim fso As Object
-    Dim parentFolder As String
-
-    Set fso = CreateObject("Scripting.FileSystemObject")
-    If Not fso.FolderExists(folderPath) Then
-        parentFolder = fso.GetParentFolderName(folderPath)
-        If Len(parentFolder) = 0 Or Not fso.FolderExists(parentFolder) Then
-            Err.Raise vbObjectError + 1012, , "ログ出力先の親フォルダが見つかりません。 parent=" & parentFolder & " / target=" & folderPath
-        End If
-        fso.CreateFolder folderPath
-    End If
-End Sub
-
-Private Function FolderExists(ByVal folderPath As String) As Boolean
-    Dim fso As Object
-
-    If Len(folderPath) = 0 Then
-        Exit Function
-    End If
-
-    Set fso = CreateObject("Scripting.FileSystemObject")
-    FolderExists = fso.FolderExists(folderPath)
-End Function
-
-Private Function EscapeLogValue(ByVal value As Variant) As String
-    Dim textValue As String
-
-    If IsError(value) Then
-        EscapeLogValue = "#ERROR"
-        Exit Function
-    End If
-
-    If IsEmpty(value) Or IsNull(value) Then
-        Exit Function
-    End If
-
-    If IsDate(value) Then
-        textValue = Format$(CDate(value), "yyyy/mm/dd hh:nn:ss")
-    Else
-        textValue = CStr(value)
-    End If
-
-    textValue = Replace(textValue, vbCrLf, " ")
-    textValue = Replace(textValue, vbCr, " ")
-    textValue = Replace(textValue, vbLf, " ")
-    textValue = Replace(textValue, vbTab, " ")
-    EscapeLogValue = textValue
-End Function
 
 Private Sub SaveAppState(ByRef state As AppState)
     state.ScreenUpdating = Application.ScreenUpdating
